@@ -1,0 +1,498 @@
+// NEON SURGE — canvas rendering. Pure drawing from world state; no sim logic here.
+// The shake offset is a sine of world time, never Math.random, so a staged frame is stable.
+import { VIEW, COLORS, TOTAL_WAVES } from './config.js';
+import {
+  SCREEN_TITLE,
+  SCREEN_PLAY,
+  SCREEN_UPGRADE,
+  SCREEN_PAUSE,
+  SCREEN_OVER,
+  SCREEN_WIN,
+} from './world.js';
+
+function rr(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function glowCircle(ctx, x, y, radius, color, alpha) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, radius);
+  g.addColorStop(0, color);
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+function drawBackground(ctx, world) {
+  const g = ctx.createRadialGradient(640, 360, 80, 640, 360, 900);
+  g.addColorStop(0, COLORS.bg1);
+  g.addColorStop(1, COLORS.bg0);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, VIEW.width, VIEW.height);
+  ctx.strokeStyle = COLORS.grid;
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= VIEW.width; x += 64) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, VIEW.height);
+    ctx.stroke();
+  }
+  for (let y = 0; y <= VIEW.height; y += 64) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(VIEW.width, y);
+    ctx.stroke();
+  }
+  // Faint concentric rings around the centre, like a radar sweep of the arena.
+  ctx.strokeStyle = COLORS.ring;
+  for (let r = 120; r <= 600; r += 120) {
+    ctx.beginPath();
+    ctx.arc(640, 360, r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.strokeStyle = 'rgba(139, 147, 184, 0.35)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(6, 6, VIEW.width - 12, VIEW.height - 12);
+}
+
+function drawPickups(ctx, world) {
+  for (const k of world.pickups) {
+    const pulse = 1 + Math.sin(world.time * 6 + k.x) * 0.15;
+    if (k.kind === 'shard') {
+      ctx.save();
+      ctx.translate(k.x, k.y);
+      ctx.rotate(Math.PI / 4);
+      ctx.fillStyle = COLORS.shard;
+      const s = 6 * pulse;
+      ctx.fillRect(-s, -s, s * 2, s * 2);
+      ctx.restore();
+    } else {
+      ctx.fillStyle = COLORS.heart;
+      ctx.beginPath();
+      ctx.arc(k.x - 4, k.y - 2, 5, 0, Math.PI * 2);
+      ctx.arc(k.x + 4, k.y - 2, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(k.x - 8, k.y);
+      ctx.lineTo(k.x + 8, k.y);
+      ctx.lineTo(k.x, k.y + 9);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+}
+
+function drawEnemy(ctx, world, e) {
+  const flash = e.flash > 0;
+  const body = flash ? '#ffffff' : e.color;
+  ctx.save();
+  ctx.translate(e.x, e.y);
+  glowCircle(ctx, 0, 0, e.radius * 2.2, e.color, 0.25);
+  ctx.fillStyle = body;
+  ctx.strokeStyle = body;
+  ctx.lineWidth = 2;
+  if (e.type === 'chaser') {
+    ctx.rotate(e.angle);
+    ctx.beginPath();
+    ctx.moveTo(e.radius + 4, 0);
+    ctx.lineTo(-e.radius, e.radius * 0.8);
+    ctx.lineTo(-e.radius * 0.4, 0);
+    ctx.lineTo(-e.radius, -e.radius * 0.8);
+    ctx.closePath();
+    ctx.fill();
+  } else if (e.type === 'tank') {
+    ctx.rotate(world.time * 0.4 + e.id);
+    ctx.beginPath();
+    for (let i = 0; i < 6; i += 1) {
+      const a = (i / 6) * Math.PI * 2;
+      const px = Math.cos(a) * e.radius;
+      const py = Math.sin(a) * e.radius;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath();
+    ctx.arc(0, 0, e.radius * 0.45, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (e.type === 'shooter') {
+    ctx.beginPath();
+    ctx.arc(0, 0, e.radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+    ctx.beginPath();
+    ctx.arc(0, 0, e.radius * 0.55, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.rotate(e.angle);
+    ctx.fillStyle = body;
+    ctx.fillRect(0, -3, e.radius + 6, 6);
+  } else if (e.type === 'splitter') {
+    ctx.beginPath();
+    ctx.arc(-e.radius * 0.35, 0, e.radius * 0.62, 0, Math.PI * 2);
+    ctx.arc(e.radius * 0.35, 0, e.radius * 0.62, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (e.type === 'mini') {
+    ctx.rotate(e.angle);
+    ctx.beginPath();
+    ctx.moveTo(e.radius + 2, 0);
+    ctx.lineTo(-e.radius, e.radius);
+    ctx.lineTo(-e.radius, -e.radius);
+    ctx.closePath();
+    ctx.fill();
+  } else if (e.type === 'boss') {
+    ctx.rotate(world.time * 0.25);
+    ctx.beginPath();
+    for (let i = 0; i < 10; i += 1) {
+      const a = (i / 10) * Math.PI * 2;
+      const r = i % 2 === 0 ? e.radius + 8 : e.radius - 4;
+      const px = Math.cos(a) * r;
+      const py = Math.sin(a) * r;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.rotate(-world.time * 0.25);
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.beginPath();
+    ctx.arc(0, 0, e.radius * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(-10, -6, 4, 0, Math.PI * 2);
+    ctx.arc(10, -6, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+  // HP bar for anything hurt.
+  if (e.hp < e.maxHp && e.type !== 'mini') {
+    const w = e.radius * 2;
+    const y = e.y - e.radius - 10;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(e.x - w / 2, y, w, 4);
+    ctx.fillStyle = e.color;
+    ctx.fillRect(e.x - w / 2, y, w * Math.max(0, e.hp / e.maxHp), 4);
+  }
+}
+
+function drawPlayer(ctx, world) {
+  const p = world.player;
+  if (!p.alive) return;
+  const blink = p.invuln > 0 && Math.floor(world.time * 14) % 2 === 0;
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  glowCircle(ctx, 0, 0, 44, COLORS.player, blink ? 0.12 : 0.3);
+  ctx.rotate(p.angle);
+  ctx.globalAlpha = blink ? 0.35 : 1;
+  ctx.fillStyle = COLORS.player;
+  ctx.beginPath();
+  ctx.moveTo(20, 0);
+  ctx.lineTo(-12, 11);
+  ctx.lineTo(-6, 0);
+  ctx.lineTo(-12, -11);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = COLORS.playerCore;
+  ctx.beginPath();
+  ctx.arc(2, 0, 4.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  // Aim tick: a short line toward the mouse so the aim reads at a glance.
+  ctx.strokeStyle = 'rgba(255, 224, 102, 0.5)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(p.x + Math.cos(p.angle) * 24, p.y + Math.sin(p.angle) * 24);
+  ctx.lineTo(p.x + Math.cos(p.angle) * 38, p.y + Math.sin(p.angle) * 38);
+  ctx.stroke();
+}
+
+function drawBullets(ctx, world) {
+  ctx.lineCap = 'round';
+  for (const b of world.bullets) {
+    ctx.strokeStyle = COLORS.bullet;
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(b.x - (b.vx / 640) * 14, b.y - (b.vy / 640) * 14);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    ctx.strokeStyle = COLORS.bulletCore;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(b.x - (b.vx / 640) * 8, b.y - (b.vy / 640) * 8);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  for (const b of world.enemyBullets) {
+    glowCircle(ctx, b.x, b.y, 14, COLORS.enemyBullet, 0.5);
+    ctx.fillStyle = COLORS.enemyBullet;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawParticles(ctx, world) {
+  for (const pt of world.particles) {
+    ctx.globalAlpha = Math.max(0, pt.life / pt.maxLife);
+    ctx.fillStyle = pt.color;
+    ctx.fillRect(pt.x - pt.size / 2, pt.y - pt.size / 2, pt.size, pt.size);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawTexts(ctx, world) {
+  ctx.textAlign = 'center';
+  for (const t of world.texts) {
+    ctx.globalAlpha = Math.max(0, t.life / t.maxLife);
+    ctx.fillStyle = t.color;
+    ctx.font = `bold ${t.size}px system-ui, sans-serif`;
+    ctx.fillText(t.text, t.x, t.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawHud(ctx, world) {
+  const p = world.player;
+  ctx.textAlign = 'left';
+  ctx.fillStyle = COLORS.text;
+  ctx.font = 'bold 22px system-ui, sans-serif';
+  ctx.fillText(`WAVE ${Math.max(1, world.wave)}/${TOTAL_WAVES}`, 24, 38);
+  ctx.font = '16px system-ui, sans-serif';
+  ctx.fillStyle = COLORS.dim;
+  ctx.fillText(`${world.enemies.length + world.spawnQueue.length} hostiles left`, 24, 62);
+  // HP bar, centre-top.
+  const bw = 260;
+  const bx = VIEW.width / 2 - bw / 2;
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  rr(ctx, bx - 4, 18, bw + 8, 22, 8);
+  ctx.fill();
+  ctx.fillStyle = p.hp > 30 ? '#39ff88' : '#ff3355';
+  rr(ctx, bx, 22, bw * Math.max(0, p.hp / p.maxHp), 14, 6);
+  ctx.fill();
+  ctx.fillStyle = COLORS.text;
+  ctx.font = 'bold 14px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(`HULL ${Math.ceil(p.hp)}`, VIEW.width / 2, 33);
+  // Score, shards, combo — right side.
+  ctx.textAlign = 'right';
+  ctx.fillStyle = COLORS.gold;
+  ctx.font = 'bold 22px system-ui, sans-serif';
+  ctx.fillText(`◆ ${world.shards}`, VIEW.width - 24, 38);
+  ctx.fillStyle = COLORS.text;
+  ctx.fillText(`SCORE ${world.score}`, VIEW.width - 24, 64);
+  if (world.combo.mult > 1) {
+    ctx.fillStyle = COLORS.cyan;
+    ctx.font = 'bold 18px system-ui, sans-serif';
+    ctx.fillText(`COMBO x${world.combo.mult}`, VIEW.width - 24, 90);
+  }
+  // Nova meter, bottom-left.
+  const ready = p.novaTimer <= 0;
+  const frac = ready ? 1 : 1 - p.novaTimer / p.novaCooldown;
+  ctx.textAlign = 'left';
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  rr(ctx, 20, VIEW.height - 34, 150, 14, 7);
+  ctx.fill();
+  ctx.fillStyle = ready ? COLORS.nova : 'rgba(125,249,255,0.45)';
+  rr(ctx, 22, VIEW.height - 32, 146 * frac, 10, 5);
+  ctx.fill();
+  ctx.fillStyle = ready ? COLORS.nova : COLORS.dim;
+  ctx.font = 'bold 14px system-ui, sans-serif';
+  ctx.fillText(ready ? 'SPACE — NOVA READY' : 'SPACE — NOVA CHARGING', 180, VIEW.height - 22);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = COLORS.dim;
+  ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText('WASD move · mouse aim · hold click to fire · P pause · M mute', VIEW.width - 24, VIEW.height - 22);
+}
+
+function dim(ctx, alpha) {
+  ctx.fillStyle = `rgba(4, 2, 16, ${alpha})`;
+  ctx.fillRect(0, 0, VIEW.width, VIEW.height);
+}
+
+function bigTitle(ctx, text, y, color, size = 72) {
+  ctx.textAlign = 'center';
+  ctx.fillStyle = color;
+  ctx.font = `bold ${size}px system-ui, sans-serif`;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 26;
+  ctx.fillText(text, VIEW.width / 2, y);
+  ctx.shadowBlur = 0;
+}
+
+function drawTitle(ctx, world) {
+  dim(ctx, 0.55);
+  bigTitle(ctx, 'NEON SURGE', 190, COLORS.cyan, 84);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COLORS.gold;
+  ctx.font = 'bold 22px system-ui, sans-serif';
+  ctx.fillText('— twin-stick arena shooter —', VIEW.width / 2, 232);
+  ctx.fillStyle = COLORS.text;
+  ctx.font = '18px system-ui, sans-serif';
+  ctx.fillText('The swarm never stops. Hold the arena, ten waves, and light up the dark.', VIEW.width / 2, 292);
+  ctx.fillStyle = COLORS.dim;
+  ctx.font = '17px system-ui, sans-serif';
+  ctx.fillText('WASD — move · mouse — aim · hold click — fire · SPACE — nova burst', VIEW.width / 2, 330);
+  ctx.fillText('Clear a wave, pick 1 of 3 upgrades. Survive wave 10 to win.', VIEW.width / 2, 358);
+  ctx.fillStyle = COLORS.gold;
+  ctx.font = 'bold 26px system-ui, sans-serif';
+  ctx.fillText('▶  CLICK OR PRESS ENTER TO PLAY', VIEW.width / 2, 440);
+  if (world.best > 0) {
+    ctx.fillStyle = COLORS.dim;
+    ctx.font = '16px system-ui, sans-serif';
+    ctx.fillText(`best score ${world.best}`, VIEW.width / 2, 486);
+  }
+  ctx.fillStyle = 'rgba(139,147,184,0.8)';
+  ctx.font = '14px system-ui, sans-serif';
+  ctx.fillText('seed 7 · deterministic', VIEW.width / 2, 690);
+}
+
+// Which upgrade card (0-2) sits under a click, or -1. Same geometry as drawUpgrade.
+export function upgradeCardIndex(x, y) {
+  const cw = 300;
+  const ch = 210;
+  const gap = 36;
+  const total = cw * 3 + gap * 2;
+  const x0 = (VIEW.width - total) / 2;
+  const y0 = 240;
+  if (y < y0 || y > y0 + ch) return -1;
+  for (let i = 0; i < 3; i += 1) {
+    const cx = x0 + i * (cw + gap);
+    if (x >= cx && x <= cx + cw) return i;
+  }
+  return -1;
+}
+
+function drawUpgrade(ctx, world, input) {
+  dim(ctx, 0.62);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COLORS.text;
+  ctx.font = 'bold 40px system-ui, sans-serif';
+  ctx.fillText(`WAVE ${world.wave} CLEARED`, VIEW.width / 2, 130);
+  ctx.fillStyle = COLORS.gold;
+  ctx.font = '20px system-ui, sans-serif';
+  ctx.fillText('Pick one upgrade — press 1, 2 or 3, or click a card', VIEW.width / 2, 168);
+  const cw = 300;
+  const ch = 210;
+  const gap = 36;
+  const total = cw * 3 + gap * 2;
+  const x0 = (VIEW.width - total) / 2;
+  const y0 = 240;
+  world.upgradeChoices.forEach((u, i) => {
+    const x = x0 + i * (cw + gap);
+    const hover = input && input.mouseX >= x && input.mouseX <= x + cw && input.mouseY >= y0 && input.mouseY <= y0 + ch;
+    ctx.fillStyle = hover ? 'rgba(34, 211, 238, 0.16)' : 'rgba(13, 10, 36, 0.92)';
+    rr(ctx, x, y0, cw, ch, 14);
+    ctx.fill();
+    ctx.strokeStyle = hover ? COLORS.cyan : 'rgba(139, 147, 184, 0.6)';
+    ctx.lineWidth = hover ? 3 : 2;
+    rr(ctx, x, y0, cw, ch, 14);
+    ctx.stroke();
+    ctx.fillStyle = COLORS.cyan;
+    ctx.font = 'bold 15px system-ui, sans-serif';
+    ctx.fillText(`[${i + 1}]`, x + cw / 2, y0 + 34);
+    ctx.fillStyle = COLORS.gold;
+    ctx.font = 'bold 26px system-ui, sans-serif';
+    ctx.fillText(u.icon, x + cw / 2, y0 + 82);
+    ctx.fillStyle = COLORS.text;
+    ctx.font = 'bold 21px system-ui, sans-serif';
+    ctx.fillText(u.name, x + cw / 2, y0 + 122);
+    ctx.fillStyle = COLORS.dim;
+    ctx.font = '16px system-ui, sans-serif';
+    ctx.fillText(u.desc, x + cw / 2, y0 + 156);
+  });
+  ctx.fillStyle = COLORS.dim;
+  ctx.font = '16px system-ui, sans-serif';
+  ctx.fillText(`score ${world.score} · hull ${Math.ceil(world.player.hp)}/${world.player.maxHp}`, VIEW.width / 2, 510);
+}
+
+function drawPause(ctx) {
+  dim(ctx, 0.6);
+  bigTitle(ctx, 'PAUSED', 330, COLORS.text, 56);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COLORS.dim;
+  ctx.font = '18px system-ui, sans-serif';
+  ctx.fillText('press P to resume', VIEW.width / 2, 380);
+}
+
+function statLine(ctx, world, y) {
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COLORS.text;
+  ctx.font = 'bold 22px system-ui, sans-serif';
+  ctx.fillText(`SCORE ${world.score}  ·  WAVE ${world.wave}/${TOTAL_WAVES}  ·  ${world.kills} destroyed`, VIEW.width / 2, y);
+  ctx.fillStyle = COLORS.dim;
+  ctx.font = '17px system-ui, sans-serif';
+  const mins = Math.floor(world.playTime / 60);
+  const secs = Math.floor(world.playTime % 60);
+  ctx.fillText(`time ${mins}:${String(secs).padStart(2, '0')}  ·  best ${world.best}`, VIEW.width / 2, y + 34);
+}
+
+function drawOver(ctx, world) {
+  dim(ctx, 0.62);
+  bigTitle(ctx, 'SIGNAL LOST', 250, COLORS.boss, 64);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COLORS.text;
+  ctx.font = '19px system-ui, sans-serif';
+  ctx.fillText('Your hull gave out. The swarm keeps the arena — for now.', VIEW.width / 2, 300);
+  statLine(ctx, world, 370);
+  ctx.fillStyle = COLORS.gold;
+  ctx.font = 'bold 24px system-ui, sans-serif';
+  ctx.fillText('▶  PRESS R TO RETRY', VIEW.width / 2, 470);
+}
+
+function drawWin(ctx, world) {
+  dim(ctx, 0.5);
+  bigTitle(ctx, 'SECTOR CLEARED', 240, COLORS.gold, 64);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COLORS.text;
+  ctx.font = '19px system-ui, sans-serif';
+  ctx.fillText('Ten waves. The swarm is scrap. The arena is yours.', VIEW.width / 2, 292);
+  statLine(ctx, world, 362);
+  ctx.fillStyle = COLORS.gold;
+  ctx.font = 'bold 24px system-ui, sans-serif';
+  ctx.fillText('▶  PRESS R TO PLAY AGAIN', VIEW.width / 2, 462);
+}
+
+export function draw(ctx, world, input) {
+  ctx.save();
+  if (world.shake > 0.3) {
+    const m = world.shake;
+    ctx.translate(Math.sin(world.time * 91) * m * 0.5, Math.cos(world.time * 113) * m * 0.5);
+  }
+  drawBackground(ctx, world);
+  drawPickups(ctx, world);
+  for (const e of world.enemies) drawEnemy(ctx, world, e);
+  drawPlayer(ctx, world);
+  drawBullets(ctx, world);
+  drawParticles(ctx, world);
+  drawTexts(ctx, world);
+  ctx.restore();
+
+  if (world.flash > 0) {
+    ctx.fillStyle = `rgba(190, 240, 255, ${Math.min(0.4, world.flash)})`;
+    ctx.fillRect(0, 0, VIEW.width, VIEW.height);
+  }
+
+  const screen = world.screen;
+  if (screen === SCREEN_PLAY || screen === SCREEN_PAUSE) drawHud(ctx, world);
+  if (screen === SCREEN_TITLE) drawTitle(ctx, world);
+  else if (screen === SCREEN_UPGRADE) {
+    drawHud(ctx, world);
+    drawUpgrade(ctx, world, input);
+  } else if (screen === SCREEN_PAUSE) drawPause(ctx);
+  else if (screen === SCREEN_OVER) drawOver(ctx, world);
+  else if (screen === SCREEN_WIN) drawWin(ctx, world);
+}
