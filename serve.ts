@@ -23,7 +23,9 @@ const TYPES = {
 
 const server = createServer(async (req, res) => {
   try {
-    const path = req.url === '/' ? '/index.html' : decodeURIComponent(req.url.split('?')[0]);
+    // Strip the query first: a bare /?shot=... must still serve the game, not 404.
+    const rawPath = decodeURIComponent(req.url.split('?')[0]);
+    const path = rawPath === '/' ? '/index.html' : rawPath;
     const file = join(root, normalize(path).replace(/^(\.\.[/\\])+/, ''));
     if (!file.startsWith(root)) {
       res.writeHead(403);
