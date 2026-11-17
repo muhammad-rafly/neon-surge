@@ -7,8 +7,8 @@ export const TOTAL_WAVES = 10;
 export const COLORS = {
   bg0: '#070512',
   bg1: '#0d0a24',
-  grid: 'rgba(124, 92, 255, 0.10)',
-  ring: 'rgba(124, 92, 255, 0.22)',
+  grid: 'rgba(124, 92, 255, 0.13)',
+  ring: 'rgba(124, 92, 255, 0.26)',
   player: '#ffe066',
   playerCore: '#ffffff',
   bullet: '#8ef6ff',

@@ -10,6 +10,13 @@ import {
   SCREEN_WIN,
 } from './world.js';
 
+// Deterministic 0..1 hash for decoration only: same input, same output, every run.
+// Never feeds the sim, so gameplay is untouched.
+function hash(n) {
+  const s = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+
 function rr(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -38,6 +45,23 @@ function drawBackground(ctx, world) {
   g.addColorStop(1, COLORS.bg0);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, VIEW.width, VIEW.height);
+  // Slow aurora glows that breathe with the visual clock (a function of world.time
+  // only, so a staged frame is stable). They lift the wide empty areas of the arena.
+  glowCircle(ctx, 280, 170, 430, COLORS.cyan, 0.05 + 0.02 * Math.sin(world.time * 0.4));
+  glowCircle(ctx, 1020, 560, 470, COLORS.chaser, 0.045 + 0.02 * Math.sin(world.time * 0.33 + 2));
+  glowCircle(ctx, 640, 360, 520, '#7c5cff', 0.03 + 0.015 * Math.sin(world.time * 0.25 + 4));
+  // Deterministic starfield: positions come from a fixed hash, never Math.random
+  // and never the gameplay rng, so the sim is untouched.
+  for (let i = 0; i < 80; i += 1) {
+    const sx = hash(i) * VIEW.width;
+    const sy = hash(i + 1000) * VIEW.height;
+    const tw = 0.65 + 0.35 * Math.sin(world.time * 1.5 + i * 1.7);
+    ctx.globalAlpha = (0.12 + hash(i + 3000) * 0.3) * tw;
+    ctx.fillStyle = hash(i + 2000) > 0.8 ? COLORS.gold : COLORS.text;
+    const sr = 0.6 + hash(i + 2000) * 1.3;
+    ctx.fillRect(sx - sr / 2, sy - sr / 2, sr, sr);
+  }
+  ctx.globalAlpha = 1;
   ctx.strokeStyle = COLORS.grid;
   ctx.lineWidth = 1;
   for (let x = 0; x <= VIEW.width; x += 64) {
@@ -59,9 +83,71 @@ function drawBackground(ctx, world) {
     ctx.arc(640, 360, r, 0, Math.PI * 2);
     ctx.stroke();
   }
+  drawArenaProps(ctx, world);
   ctx.strokeStyle = 'rgba(139, 147, 184, 0.35)';
   ctx.lineWidth = 2;
   ctx.strokeRect(6, 6, VIEW.width - 12, VIEW.height - 12);
+}
+
+// Fixed arena props: glowing pylons and floor panels at fixed spots, drawn behind
+// everything. Pure decoration — no collision, no sim effect, no rng.
+const PYLONS = [
+  [170, 170, 58, '#22d3ee'],
+  [1110, 150, 66, '#ff2d95'],
+  [160, 570, 62, '#ffd166'],
+  [1120, 580, 54, '#22d3ee'],
+  [430, 110, 46, '#ff2d95'],
+  [850, 615, 58, '#ffd166'],
+  [105, 360, 50, '#7c5cff'],
+  [1175, 360, 50, '#39ff88'],
+];
+const PANELS = [
+  [280, 500, 110, 64],
+  [900, 160, 110, 64],
+  [560, 92, 120, 54],
+  [600, 620, 120, 54],
+];
+
+function drawArenaProps(ctx, world) {
+  ctx.save();
+  for (const [x, y, w, h] of PANELS) {
+    ctx.strokeStyle = 'rgba(139, 147, 184, 0.28)';
+    ctx.lineWidth = 1.5;
+    rr(ctx, x, y, w, h, 8);
+    ctx.stroke();
+    // Corner ticks so the panel reads as floor marking, not a button.
+    ctx.strokeStyle = 'rgba(34, 211, 238, 0.5)';
+    ctx.lineWidth = 2;
+    const t = 10;
+    ctx.beginPath();
+    ctx.moveTo(x, y + t);
+    ctx.lineTo(x, y);
+    ctx.lineTo(x + t, y);
+    ctx.moveTo(x + w - t, y);
+    ctx.lineTo(x + w, y);
+    ctx.lineTo(x + w, y + t);
+    ctx.moveTo(x + w, y + h - t);
+    ctx.lineTo(x + w, y + h);
+    ctx.lineTo(x + w - t, y + h);
+    ctx.moveTo(x + t, y + h);
+    ctx.lineTo(x, y + h);
+    ctx.lineTo(x, y + h - t);
+    ctx.stroke();
+  }
+  for (const [x, y, h, color] of PYLONS) {
+    glowCircle(ctx, x, y, 42, color, 0.16 + 0.04 * Math.sin(world.time * 1.1 + x));
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.55;
+    ctx.fillRect(x - 5, y - h / 2, 10, h);
+    ctx.globalAlpha = 0.9;
+    ctx.save();
+    ctx.translate(x, y - h / 2 - 10);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillRect(-6, -6, 12, 12);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
 }
 
 function drawPickups(ctx, world) {
@@ -254,6 +340,36 @@ function drawParticles(ctx, world) {
   ctx.globalAlpha = 1;
 }
 
+function drawRings(ctx, world) {
+  for (const r of world.rings) {
+    const f = 1 - r.life / r.maxLife;
+    const rad = r.r0 + (r.r1 - r.r0) * f;
+    ctx.globalAlpha = Math.max(0, r.life / r.maxLife) * 0.8;
+    ctx.strokeStyle = r.color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(r.x, r.y, rad, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// One big centre callout for a rising combo. Only drawn while playing, so it can
+// never sit on top of an end card or the upgrade screen.
+function drawCallout(ctx, world) {
+  const c = world.callout;
+  if (!c || world.screen !== SCREEN_PLAY) return;
+  ctx.globalAlpha = Math.min(1, (c.life / c.maxLife) * 2);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COLORS.cyan;
+  ctx.font = 'bold 30px system-ui, sans-serif';
+  ctx.shadowColor = COLORS.cyan;
+  ctx.shadowBlur = 18;
+  ctx.fillText(c.text, VIEW.width / 2, 132);
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+}
+
 function drawTexts(ctx, world) {
   ctx.textAlign = 'center';
   for (const t of world.texts) {
@@ -335,25 +451,67 @@ function bigTitle(ctx, text, y, color, size = 72) {
 
 function drawTitle(ctx, world) {
   dim(ctx, 0.55);
-  bigTitle(ctx, 'NEON SURGE', 190, COLORS.cyan, 84);
+  // A second, wider glow pass under the title so it burns through the dim.
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COLORS.cyan;
+  ctx.font = 'bold 92px system-ui, sans-serif';
+  ctx.shadowColor = COLORS.cyan;
+  ctx.shadowBlur = 46;
+  ctx.globalAlpha = 0.55;
+  ctx.fillText('NEON SURGE', VIEW.width / 2, 185);
+  ctx.globalAlpha = 1;
+  bigTitle(ctx, 'NEON SURGE', 185, COLORS.cyan, 92);
   ctx.textAlign = 'center';
   ctx.fillStyle = COLORS.gold;
   ctx.font = 'bold 22px system-ui, sans-serif';
-  ctx.fillText('— twin-stick arena shooter —', VIEW.width / 2, 232);
+  ctx.fillText('— twin-stick arena shooter —', VIEW.width / 2, 228);
+  // Neon underline: cyan fading into magenta under the subtitle.
+  const ug = ctx.createLinearGradient(VIEW.width / 2 - 210, 0, VIEW.width / 2 + 210, 0);
+  ug.addColorStop(0, COLORS.cyan);
+  ug.addColorStop(0.5, '#7c5cff');
+  ug.addColorStop(1, COLORS.chaser);
+  ctx.fillStyle = ug;
+  ctx.fillRect(VIEW.width / 2 - 210, 246, 420, 4);
   ctx.fillStyle = COLORS.text;
   ctx.font = '18px system-ui, sans-serif';
-  ctx.fillText('The swarm never stops. Hold the arena, ten waves, and light up the dark.', VIEW.width / 2, 292);
+  ctx.fillText('The swarm never stops. Hold the arena, ten waves, and light up the dark.', VIEW.width / 2, 288);
   ctx.fillStyle = COLORS.dim;
   ctx.font = '17px system-ui, sans-serif';
-  ctx.fillText('WASD — move · mouse — aim · hold click — fire · SPACE — nova burst', VIEW.width / 2, 330);
-  ctx.fillText('Clear a wave, pick 1 of 3 upgrades. Survive wave 10 to win.', VIEW.width / 2, 358);
+  ctx.fillText('WASD — move · mouse — aim · hold click — fire · SPACE — nova burst', VIEW.width / 2, 326);
+  ctx.fillText('Clear a wave, pick 1 of 3 upgrades. Survive wave 10 to win.', VIEW.width / 2, 354);
+  // Feature chips: the whole game in three words, readable at a glance.
+  const chips = [
+    ['10 WAVES', COLORS.cyan],
+    ['8 UPGRADES', COLORS.gold],
+    ['BOSS FINALE', COLORS.chaser],
+  ];
+  const cw = 176;
+  const ch = 36;
+  const gap = 18;
+  const x0 = (VIEW.width - (cw * 3 + gap * 2)) / 2;
+  chips.forEach(([label, color], i) => {
+    const x = x0 + i * (cw + gap);
+    ctx.fillStyle = 'rgba(13, 10, 36, 0.85)';
+    rr(ctx, x, 392, cw, ch, 10);
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    rr(ctx, x, 392, cw, ch, 10);
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.font = 'bold 15px system-ui, sans-serif';
+    ctx.fillText(label, x + cw / 2, 415);
+  });
+  // The call to play pulses so the eye lands on it first.
+  ctx.globalAlpha = 0.72 + 0.28 * Math.sin(world.time * 4);
   ctx.fillStyle = COLORS.gold;
   ctx.font = 'bold 26px system-ui, sans-serif';
-  ctx.fillText('▶  CLICK OR PRESS ENTER TO PLAY', VIEW.width / 2, 440);
+  ctx.fillText('▶  CLICK OR PRESS ENTER TO PLAY', VIEW.width / 2, 472);
+  ctx.globalAlpha = 1;
   if (world.best > 0) {
     ctx.fillStyle = COLORS.dim;
     ctx.font = '16px system-ui, sans-serif';
-    ctx.fillText(`best score ${world.best}`, VIEW.width / 2, 486);
+    ctx.fillText(`best score ${world.best}`, VIEW.width / 2, 516);
   }
   ctx.fillStyle = 'rgba(139,147,184,0.8)';
   ctx.font = '14px system-ui, sans-serif';
@@ -478,7 +636,9 @@ export function draw(ctx, world, input) {
   drawPlayer(ctx, world);
   drawBullets(ctx, world);
   drawParticles(ctx, world);
+  drawRings(ctx, world);
   drawTexts(ctx, world);
+  drawCallout(ctx, world);
   ctx.restore();
 
   if (world.flash > 0) {

@@ -34,6 +34,8 @@ export function makeWorld(seed) {
     enemyBullets: [],
     particles: [],
     texts: [],
+    rings: [],
+    callout: null,
     pickups: [],
     spawnQueue: [],
     spawnTimer: 0,
@@ -89,6 +91,8 @@ export function reset(world) {
   world.enemyBullets = [];
   world.particles = [];
   world.texts = [];
+  world.rings = [];
+  world.callout = null;
   world.pickups = [];
   world.spawnQueue = [];
   world.spawnTimer = 0;
@@ -195,6 +199,13 @@ function burst(world, x, y, color, n, speed, life = 0.6, size = 3) {
   if (world.particles.length > 420) world.particles.splice(0, world.particles.length - 420);
 }
 
+// An expanding shockwave ring: pure visual juice, no gameplay effect.
+// Its radius is derived from remaining life at draw time, so it is deterministic.
+function addRing(world, x, y, r0, r1, color, life = 0.35) {
+  world.rings.push({ x, y, r0, r1, color, life, maxLife: life });
+  if (world.rings.length > 24) world.rings.splice(0, world.rings.length - 24);
+}
+
 function addText(world, x, y, text, color, size = 15) {
   world.texts.push({ x, y, text, life: 0.9, maxLife: 0.9, color, size });
 }
@@ -216,14 +227,20 @@ function killEnemy(world, enemy, awardScore) {
   world.enemies.splice(idx, 1);
   world.kills += 1;
   if (awardScore) {
+    const oldMult = world.combo.mult;
     world.combo.count += 1;
     world.combo.timer = COMBO.window;
     world.combo.mult = Math.min(1 + Math.floor(world.combo.count / 4), COMBO.maxMult);
     const gained = enemy.score * world.combo.mult;
     world.score += gained;
     addText(world, enemy.x, enemy.y - 14, `+${gained}`, world.combo.mult > 1 ? COLORS.gold : COLORS.text, world.combo.mult > 1 ? 18 : 14);
+    // A rising combo is the moment worth shouting about: one centre callout.
+    if (world.combo.mult > oldMult && world.combo.mult >= 3) {
+      world.callout = { text: `COMBO x${world.combo.mult}`, life: 0.9, maxLife: 0.9 };
+    }
   }
   burst(world, enemy.x, enemy.y, enemy.color, enemy.type === 'boss' ? 60 : 16, 260);
+  addRing(world, enemy.x, enemy.y, enemy.radius, enemy.radius * (enemy.type === 'boss' ? 3 : 3.5), enemy.color, enemy.type === 'boss' ? 0.5 : 0.35);
   sfx.explode(world.audioRef);
   world.shake = Math.max(world.shake, enemy.type === 'boss' ? 14 : 5);
   if (enemy.type === 'splitter') {
@@ -278,6 +295,7 @@ function fireNova(world) {
     }
   }
   burst(world, p.x, p.y, COLORS.nova, 40, 420, 0.7, 3);
+  addRing(world, p.x, p.y, 40, p.novaRadius, COLORS.nova, 0.5);
 }
 
 function playerShoot(world) {
@@ -339,6 +357,17 @@ function drawUpgrades(world) {
 
 function enemiesLeft(world) {
   return world.enemies.length + world.spawnQueue.length;
+}
+
+// The win / game-over screen is a clean end card: floating score texts, frozen
+// bullets and shockwave rings would sit on top of its stat lines, so drop them.
+// Pickups and particles stay as ambient debris behind the dim.
+function clearEndScreen(world) {
+  world.texts = [];
+  world.bullets = [];
+  world.enemyBullets = [];
+  world.rings = [];
+  world.callout = null;
 }
 
 // One fixed step. Returns an event bitmask. `input` is the live input object;
@@ -571,10 +600,20 @@ export function step(world, dt, input, audio) {
     t.y -= 34 * dt;
     if (t.life <= 0) world.texts.splice(i, 1);
   }
+  for (let i = world.rings.length - 1; i >= 0; i -= 1) {
+    const r = world.rings[i];
+    r.life -= dt;
+    if (r.life <= 0) world.rings.splice(i, 1);
+  }
+  if (world.callout) {
+    world.callout.life -= dt;
+    if (world.callout.life <= 0) world.callout = null;
+  }
 
   // --- wave clear / win / loss ---
   if (!p.alive) {
     world.screen = SCREEN_OVER;
+    clearEndScreen(world);
     if (world.score > world.best) world.best = world.score;
     return EVENT_OVER;
   }
@@ -582,10 +621,17 @@ export function step(world, dt, input, audio) {
     world.score += 100 * world.wave;
     if (world.wave >= TOTAL_WAVES) {
       world.screen = SCREEN_WIN;
+      clearEndScreen(world);
       if (world.score > world.best) world.best = world.score;
       sfx.win(audio);
       return EVENT_WIN;
     }
+    world.callout = null;
+    // Same idea as the end screen: floating score texts and frozen rings from the
+    // last kills would ghost through the upgrade cards. Bullets stay — they are
+    // live sim objects and carry into the next wave exactly as before.
+    world.texts = [];
+    world.rings = [];
     drawUpgrades(world);
     return EVENT_WAVE_CLEAR;
   }

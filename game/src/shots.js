@@ -136,6 +136,8 @@ export function stageShot(name, world, audio) {
     // floating score texts and particles that would clutter the title.
     world.texts = [];
     world.particles = [];
+    world.rings = [];
+    world.callout = null;
     world.screen = SCREEN_TITLE;
     return { screen: SCREEN_TITLE };
   }
